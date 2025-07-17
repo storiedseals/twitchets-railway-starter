@@ -1,0 +1,6 @@
+services:
+  - name: twitchets-bot
+    type: worker
+    env: docker
+    plan: free
+    autoDeploy: true
