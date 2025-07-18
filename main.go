@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/arran4/golang-twickets/twitchets"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
@@ -30,62 +30,50 @@ type Config struct {
 }
 
 func main() {
-	// ✅ Start minimal HTTP server for Render port binding
+	// Start HTTP server on port 10000
 	go func() {
 		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprintln(w, "Twitchets bot is running.")
+			fmt.Fprintln(w, "Twitchets bot is running")
 		})
-
-		port := os.Getenv("PORT")
-		if port == "" {
-			port = "10000"
-		}
-
-		fmt.Println("Starting HTTP server on port " + port)
-		if err := http.ListenAndServe(":"+port, nil); err != nil {
-			log.Fatalf("HTTP server error: %v", err)
-		}
+		log.Println("HTTP server listening on :10000")
+		log.Fatal(http.ListenAndServe(":10000", nil))
 	}()
 
-	// 🔧 Load config from environment variable
-	cfgYaml := os.Getenv("CONFIG")
-	if cfgYaml == "" {
-		log.Fatal("CONFIG environment variable not set")
+	// Load config from environment variable
+	raw := os.Getenv("CONFIG")
+	if raw == "" {
+		log.Fatal("Missing CONFIG environment variable")
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal([]byte(cfgYaml), &cfg); err != nil {
-		log.Fatalf("Failed to parse config: %v", err)
+	if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+		log.Fatalf("Failed to parse CONFIG: %v", err)
 	}
 
-	client := twitchets.NewClient(cfg.Country)
-	notifier := twitchets.NewTelegramNotifier(cfg.Notification.Telegram.Token, cfg.Notification.Telegram.ChatID)
+	log.Printf("Starting Twickets polling (%d events)...", len(cfg.Tickets))
 
-	fmt.Println("Starting Twitchets bot...")
-	interval := time.Duration(cfg.Polling.Interval) * time.Second
-
-	for {
-		for _, ticket := range cfg.Tickets {
-			fmt.Println("Polling Twickets event...")
-
-			items, err := client.GetTickets(ticket.EventID)
-			if err != nil {
-				log.Printf("Error fetching tickets: %v", err)
-				continue
-			}
-
-			for _, item := range items {
-				if item.NumTickets >= ticket.NumTickets && item.DiscountPercent() >= ticket.Discount {
-					err := notifier.Notify(item)
-					if err != nil {
-						log.Printf("Notify error: %v", err)
-					} else {
-						log.Printf("Notified for event %s: %d tickets at £%.2f", ticket.EventID, item.NumTickets, item.Price)
+	for _, t := range cfg.Tickets {
+		go func(ticketCfg struct {
+			EventID    string `yaml:"eventId"`
+			NumTickets int    `yaml:"numTickets"`
+			Discount   int    `yaml:"discount"`
+		}) {
+			client := twickets.NewTwicketsClient(cfg.Country)
+			for {
+				tickets, err := client.GetTickets(ticketCfg.EventID)
+				if err == nil {
+					for _, ticket := range tickets {
+						if ticket.Tickets >= ticketCfg.NumTickets &&
+							ticket.DiscountPercent() >= ticketCfg.Discount {
+							message := fmt.Sprintf("🎟️ %dx tickets listed for £%.2f – %s", ticket.Tickets, ticket.Price, ticket.URL())
+							twickets.SendTelegram(cfg.Notification.Telegram.Token, cfg.Notification.Telegram.ChatID, message)
+						}
 					}
 				}
+				time.Sleep(time.Duration(cfg.Polling.Interval) * time.Second)
 			}
-		}
-
-		time.Sleep(interval)
+		}(t)
 	}
+
+	select {} // block forever
 }
